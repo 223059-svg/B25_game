@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Puyo Puzzle Web</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #1a1a2e, #16213e, #0f3460);
+            color: white;
+            font-family: 'Inter', 'Hiragino Kaku Gothic ProN', 'Meiryo', sans-serif;
+            touch-action: none; /* Prevent scroll on touch */
+            overflow: hidden;
+        }
+        canvas {
+            image-rendering: -moz-crisp-edges;
+            image-rendering: -webkit-crisp-edges;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 1rem;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        }
+        .control-btn {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            user-select: none;
+            transition: all 0.1s;
+        }
+        .control-btn:active {
+            background: rgba(255, 255, 255, 0.3);
+            transform: scale(0.95);
+        }
+        
+        #chain-text {
+            position: absolute;
+            top: 40%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 3rem;
+            font-weight: 900;
+            color: #fff;
+            text-shadow: 0 0 10px #ff00ff, 0 0 20px #ff00ff, 2px 2px 0 #000;
+            opacity: 0;
+            pointer-events: none;
+            z-index: 10;
+            white-space: nowrap;
+            transition: opacity 0.2s, transform 0.2s;
+        }
+        
+        .show-chain {
+            animation: popChain 1s ease-out forwards;
+        }
+
+        @keyframes popChain {
+            0% { opacity: 0; transform: translate(-50%, -40%) scale(0.5); }
+            20% { opacity: 1; transform: translate(-50%, -50%) scale(1.2); }
+            40% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+            80% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+            100% { opacity: 0; transform: translate(-50%, -60%) scale(1); }
+        }
+    </style>
+</head>
+<body class="h-screen w-screen flex flex-col items-center justify-center">
+
+    <!-- Game Container -->
+    <div class="relative flex flex-col md:flex-row items-center gap-4 w-full max-w-4xl px-4">
+        
+        <!-- Left/Top Info Panel -->
+        <div class="glass-panel p-4 flex md:flex-col gap-4 w-full md:w-48 justify-between items-center text-center order-2 md:order-1">
+            <div>
+                <h2 class="text-gray-400 text-sm font-bold uppercase tracking-wider mb-1">SCORE</h2>
+                <div id="score" class="text-2xl font-mono font-bold text-yellow-400">0</div>
+            </div>
+            <div>
+                <h2 class="text-gray-400 text-sm font-bold uppercase tracking-wider mb-1">NEXT</h2>
+                <canvas id="nextCanvas" width="80" height="120" class="mx-auto rounded-lg bg-black/30"></canvas>
+            </div>
+            <button id="restartBtn" class="px-4 py-2 bg-red-500/20 hover:bg-red-500/40 border border-red-500/50 rounded-lg text-red-200 transition-colors hidden md:block">
+                Restart
+            </button>
+        </div>
+
+        <!-- Main Board -->
+        <div class="relative glass-panel p-2 order-1 md:order-2">
+            <canvas id="gameCanvas" width="240" height="480" class="bg-black/40 rounded"></canvas>
+            <div id="chain-text"></div>
+            <!-- Game Over Overlay -->
+            <div id="gameOverScreen" class="absolute inset-0 bg-black/80 rounded-xl flex flex-col items-center justify-center opacity-0 pointer-events-none transition-opacity duration-300">
+                <h1 class="text-4xl font-bold text-red-500 mb-2">GAME OVER</h1>
+                <p class="text-xl mb-6">Score: <span id="finalScore" class="text-yellow-400 font-mono">0</span></p>
+                <button onclick="startGame()" class="px-6 py-3 bg-blue-600 hover:bg-blue-500 rounded-full font-bold shadow-lg shadow-blue-500/50 transition-all">
+                    もう一度プレイ
+                </button>
+            </div>
+        </div>
+
+        <!-- Mobile Controls (Visible only on smaller screens) -->
+        <div class="w-full max-w-sm flex flex-col gap-2 order-3 md:hidden">
+             <div class="flex justify-between px-6">
+                <div class="control-btn w-14 h-14" id="btnLeft">◀</div>
+                <div class="control-btn w-14 h-14" id="btnRotL">↺</div>
+                <div class="control-btn w-14 h-14" id="btnRotR">↻</div>
+                <div class="control-btn w-14 h-14" id="btnRight">▶</div>
+            </div>
+            <div class="flex justify-center">
+                <div class="control-btn w-16 h-16 bg-blue-500/20 border-blue-400/50" id="btnDown">▼</div>
+            </div>
+        </div>
+    </div>
+
+<script>
+/**
+ * ぷよぷよ風ゲームロジック
+ */
+
+// --- 定数と設定 ---
+const COLS = 6;
+const ROWS = 12;      // 表示領域
+const HIDDEN_ROWS = 1; // 画面外の上部（出現位置）
+const TOTAL_ROWS = ROWS + HIDDEN_ROWS;
+const CELL_SIZE = 40; // 内部描画解像度用（Canvasサイズ: 240x480）
+
+const COLORS = {
+    0: null,
+    1: { name: 'red', gradient: ['#ff4b4b', '#b30000'] },
+    2: { name: 'green', gradient: ['#4bff4b', '#00b300'] },
+    3: { name: 'blue', gradient: ['#4b4bff', '#0000b3'] },
+    4: { name: 'yellow', gradient: ['#ffff4b', '#b3b300'] },
+    5: { name: 'purple', gradient: ['#ff4bff', '#b300b3'] }
+};
+const NUM_COLORS = 5;
+
+// ゲーム状態
+const STATE = {
+    PLAYING: 0,
+    GRAVITY: 1,
+    CHECK_MATCH: 2,
+    CLEARING: 3,
+    GAME_OVER: 4
+};
+
+// --- グローバル変数 ---
+let canvas, ctx;
+let nextCanvas, nextCtx;
+let grid = []; // 2D配列 [y][x] 0=空, 1~5=色
+let particles = [];
+let state = STATE.PLAYING;
+let score = 0;
+let chainCount = 0;
+
+let currentPiece = null;
+let nextPiece = null;
+
+// アニメーション・タイマー用
+let lastTime = 0;
+let dropCounter = 0;
+let dropInterval = 1000; // 1秒ごとに落下
+let fastDrop = false;
+let animationTimer = 0;
+let clearGroups = []; // 消去対象のグループリスト
+let fallingBlocks = []; // 自由落下中のブロックリスト
+
+// --- 初期化処理 ---
+window.onload = () => {
+    canvas = document.getElementById('gameCanvas');
+    ctx = canvas.getContext('2d');
+    nextCanvas = document.getElementById('nextCanvas');
+    nextCtx = nextCanvas.getContext('2d');
+
+    setupInput();
+    startGame();
+    requestAnimationFrame(update);
+};
+
+function startGame() {
+    // 盤面初期化
+    grid = Array.from({ length: TOTAL_ROWS }, () => Array(COLS).fill(0));
+    score = 0;
+    chainCount = 0;
+    updateScoreDisplay();
+    dropInterval = 800;
+    particles = [];
+    
+    document.getElementById('gameOverScreen').classList.add('opacity-0', 'pointer-events-none');
+    
+    nextPiece = generatePiece();
+    spawnPiece();
+    state = STATE.PLAYING;
+}
+
+// --- ピース関連 ---
+function generatePiece() {
+    return {
+        colors: [
+            Math.floor(Math.random() * NUM_COLORS) + 1,
+            Math.floor(Math.random() * NUM_COLORS) + 1
+        ]
+    };
+}
+
+function spawnPiece() {
+    currentPiece = {
+        x: 2, y: 0, // 軸ブロックの位置
+        subX: 2, subY: -1, // サブブロックの位置（最初は上）
+        colorMain: nextPiece.colors[0],
+        colorSub: nextPiece.colors[1],
+        rotation: 0 // 0:上, 1:右, 2:下, 3:左
+    };
+    nextPiece = generatePiece();
+    drawNext();
+
+    // 登場時にすでに重なっていたらゲームオーバー
+    if (grid[currentPiece.y][currentPiece.x] !== 0) {
+        state = STATE.GAME_OVER;
+        showGameOver();
+    }
+}
+
+// --- 入力処理 ---
+let keys = {};
+function setupInput() {
+    // キーボード
+    window.addEventListener('keydown', (e) => {
+        if (state !== STATE.PLAYING) return;
+        keys[e.code] = true;
+        handleInput(e.code);
+        if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(e.code)) {
+            e.preventDefault();
+        }
+    });
+    window.addEventListener('keyup', (e) => {
+        keys[e.code] = false;
+        if (e.code === 'ArrowDown') fastDrop = false;
+    });
+
+    // モバイルボタン
+    const bindBtn = (id, code, isHoldable = false) => {
+        const btn = document.getElementById(id);
+        if(!btn) return;
+        const start = (e) => { e.preventDefault(); if(state===STATE.PLAYING) handleInput(code); if(isHoldable) fastDrop = true; };
+        const end = (e) => { e.preventDefault(); if(isHoldable) fastDrop = false; };
+        btn.addEventListener('touchstart', start);
+        btn.addEventListener('touchend', end);
+        btn.addEventListener('mousedown', start);
+        btn.addEventListener('mouseup', end);
+        btn.addEventListener('mouseleave', end);
+    };
+
+    bindBtn('btnLeft', 'ArrowLeft');
+    bindBtn('btnRight', 'ArrowRight');
+    bindBtn('btnRotL', 'KeyZ'); // 反時計
+    bindBtn('btnRotR', 'ArrowUp'); // 時計
+    bindBtn('btnDown', 'ArrowDown', true);
+
+    document.getElementById('restartBtn').addEventListener('click', startGame);
+}
+
+function handleInput(code) {
+    if (state !== STATE.PLAYING || !currentPiece) return;
+
+    let { x, y, rotation } = currentPiece;
+
+    if (code === 'ArrowLeft') {
+        if (canMove(x - 1, y, getSubPos(x - 1, y, rotation))) {
+            currentPiece.x--;
+            currentPiece.subX = getSubPos(currentPiece.x, currentPiece.y, currentPiece.rotation).x;
+        }
+    }
+    if (code === 'ArrowRight') {
+        if (canMove(x + 1, y, getSubPos(x + 1, y, rotation))) {
+            currentPiece.x++;
+            currentPiece.subX = getSubPos(currentPiece.x, currentPiece.y, currentPiece.rotation).x;
+        }
+    }
+    if (code === 'ArrowDown') {
+        fastDrop = true;
+    }
+    if (code === 'ArrowUp' || code === 'KeyX') {
+        // 時計回り
+        rotate(1);
+    }
+    if (code === 'KeyZ') {
+        // 反時計回り
+        rotate(-1);
+    }
+}
+
+function getSubPos(ax, ay, rot) {
+    switch (rot % 4) {
+        case 0: return { x: ax, y: ay - 1 }; // 上
+        case 1: return { x: ax + 1, y: ay }; // 右
+        case 2: return { x: ax, y: ay + 1 }; // 下
+        case 3: return { x: ax - 1, y: ay }; // 左
+    }
+}
+
+function rotate(dir) {
+    let newRot = (currentPiece.rotation + dir + 4) % 4;
+    let newSub = getSubPos(currentPiece.x, currentPiece.y, newRot);
+
+    // 回転可能かチェック (壁蹴り処理含む)
+    if (isValid(newSub.x, newSub.y)) {
+        currentPiece.rotation = newRot;
+    } else {
+        // 壁蹴り (軸をずらして回転可能か試す)
+        // 1. 軸を左にずらす
+        if (isValid(currentPiece.x - 1, currentPiece.y) && isValid(getSubPos(currentPiece.x - 1, currentPiece.y, newRot).x, getSubPos(currentPiece.x - 1, currentPiece.y, newRot).y)) {
+            currentPiece.x--;
+            currentPiece.rotation = newRot;
+        }
+        // 2. 軸を右にずらす
+        else if (isValid(currentPiece.x + 1, currentPiece.y) && isValid(getSubPos(currentPiece.x + 1, currentPiece.y, newRot).x, getSubPos(currentPiece.x + 1, currentPiece.y, newRot).y)) {
+            currentPiece.x++;
+            currentPiece.rotation = newRot;
+        }
+        // 3. 軸を上にずらす（下が詰まっている場合）
+        else if (isValid(currentPiece.x, currentPiece.y - 1) && isValid(getSubPos(currentPiece.x, currentPiece.y - 1, newRot).x, getSubPos(currentPiece.x, currentPiece.y - 1, newRot).y)) {
+            currentPiece.y--;
+            currentPiece.rotation = newRot;
+        }
+    }
+    
+    // 更新を反映
+    currentPiece.subX = getSubPos(currentPiece.x, currentPiece.y, currentPiece.rotation).x;
+    currentPiece.subY = getSubPos(currentPiece.x, currentPiece.y, currentPiece.rotation).y;
+}
+
+function isValid(x, y) {
+    return x >= 0 && x < COLS && y < TOTAL_ROWS && (y < 0 || grid[y][x] === 0);
+}
+
+function canMove(newAx, newAy, newSub) {
+    return isValid(newAx, newAy) && isValid(newSub.x, newSub.y);
+}
+
+// --- メインループ ---
+function update(time = 0) {
+    const deltaTime = time - lastTime;
+    lastTime = time;
+
+    updateParticles(deltaTime);
+
+    switch (state) {
+        case STATE.PLAYING:
+            handlePlayingState(deltaTime);
+            break;
+        case STATE.GRAVITY:
+            handleGravityState(deltaTime);
+            break;
+        case STATE.CHECK_MATCH:
+            checkMatches();
+            break;
+        case STATE.CLEARING:
+            handleClearingState(deltaTime);
+            break;
+    }
+
+    draw();
+    requestAnimationFrame(update);
+}
+
+function handlePlayingState(dt) {
+    if (!currentPiece) return;
+
+    let currentDropSpeed = fastDrop ? 50 : dropInterval;
+    dropCounter += dt;
+
+    if (dropCounter > currentDropSpeed) {
+        dropCounter = 0;
+        
+        let sub = getSubPos(currentPiece.x, currentPiece.y, currentPiece.rotation);
+        
+        // 下に移動可能かチェック
+        if (canMove(currentPiece.x, currentPiece.y + 1, {x: sub.x, y: sub.y + 1})) {
+            currentPiece.y++;
+            currentPiece.subY = getSubPos(currentPiece.x, currentPiece.y, currentPiece.rotation).y;
+        } else {
+            // 接地した
+            lockPiece();
+        }
+    }
+}
+
+function lockPiece() {
+    // 盤面に固定
+    if (currentPiece.y >= 0) grid[currentPiece.y][currentPiece.x] = currentPiece.colorMain;
+    if (currentPiece.subY >= 0) grid[currentPiece.subY][currentPiece.subX] = currentPiece.colorSub;
+    
+    currentPiece = null;
+    fastDrop = false;
+    chainCount = 0;
+    
+    // 自由落下状態へ移行（ちぎれ判定のため）
+    prepareGravity();
+}
+
+function prepareGravity() {
+    fallingBlocks = [];
+    let willFall = false;
+
+    // 下から上へ走査して、浮いているブロックを見つける
+    for (let x = 0; x < COLS; x++) {
+        let bottomEmpty = -1;
+        for (let y = TOTAL_ROWS - 1; y >= 0; y--) {
+            if (grid[y][x] === 0) {
+                if (bottomEmpty === -1) bottomEmpty = y;
+            } else if (bottomEmpty !== -1) {
+                // ブロックが浮いている
+                fallingBlocks.push({
+                    x: x,
+                    fromY: y,
+                    toY: bottomEmpty,
+                    color: grid[y][x],
+                    currentY: y // アニメーション用
+                });
+                grid[y][x] = 0; // 一旦消す
+                bottomEmpty--;
+                willFall = true;
+            }
+        }
+    }
+
+    if (willFall) {
+        state = STATE.GRAVITY;
+        animationTimer = 0;
+    } else {
+        state = STATE.CHECK_MATCH;
+    }
+}
+
+function handleGravityState(dt) {
+    animationTimer += dt;
+    const fallDuration = 150; // 落下にかかる時間(ms)
+    
+    let progress = Math.min(animationTimer / fallDuration, 1);
+    
+    if (progress === 1) {
+        // 落下完了、盤面に再配置
+        fallingBlocks.forEach(b => {
+            grid[b.toY][b.x] = b.color;
+        });
+        fallingBlocks = [];
+        state = STATE.CHECK_MATCH;
+    } else {
+        // 落下アニメーション更新
+        fallingBlocks.forEach(b => {
+            b.currentY = b.fromY + (b.toY - b.fromY) * progress;
+        });
+    }
+}
+
+function checkMatches() {
+    let visited = Array.from({ length: TOTAL_ROWS }, () => Array(COLS).fill(false));
+    clearGroups = [];
+
+    // 盤面走査
+    for (let y = 0; y < TOTAL_ROWS; y++) {
+        for (let x = 0; x < COLS; x++) {
+            if (grid[y][x] !== 0 && !visited[y][x]) {
+                let color = grid[y][x];
+                let group = [];
+                let queue = [{ x, y }];
+                visited[y][x] = true;
+
+                // BFSで連結を探索
+                while (queue.length > 0) {
+                    let curr = queue.shift();
+                    group.push(curr);
+
+                    const dirs = [[0,1], [1,0], [0,-1], [-1,0]];
+                    for (let d of dirs) {
+                        let nx = curr.x + d[0];
+                        let ny = curr.y + d[1];
+                        if (nx >= 0 && nx < COLS && ny >= 0 && ny < TOTAL_ROWS && !visited[ny][nx] && grid[ny][nx] === color) {
+                            visited[ny][nx] = true;
+                            queue.push({ x: nx, y: ny });
+                        }
+                    }
+                }
+
+                if (group.length >= 4) {
+                    clearGroups.push({ color, blocks: group });
+                }
+            }
+        }
+    }
+
+    if (clearGroups.length > 0) {
+        // 消去アニメーションへ
+        state = STATE.CLEARING;
+        animationTimer = 0;
+        chainCount++;
+        showChainEffect(chainCount);
+        
+        // スコア加算
+        let puyoCount = clearGroups.reduce((sum, g) => sum + g.blocks.length, 0);
+        let chainMultiplier = chainCount === 1 ? 1 : Math.pow(2, chainCount - 1) + 1; // 簡易スコア計算
+        let addedScore = puyoCount * 10 * chainMultiplier;
+        score += addedScore;
+        updateScoreDisplay();
+        
+        // パーティクル生成の準備 (実際の消去はアニメーション後)
+        clearGroups.forEach(g => {
+            g.blocks.forEach(b => {
+                createParticles(b.x * CELL_SIZE + CELL_SIZE/2, (b.y - HIDDEN_ROWS) * CELL_SIZE + CELL_SIZE/2, COLORS[g.color].gradient[0]);
+            });
+        });
+
+    } else {
+        // 連鎖終了
+        if (state !== STATE.GAME_OVER) {
+            spawnPiece();
+            state = STATE.PLAYING;
+            dropInterval = Math.max(200, 800 - (score / 500)); // スピードアップ
+        }
+    }
+}
+
+function handleClearingState(dt) {
+    animationTimer += dt;
+    const clearDuration = 400; // 消滅アニメーション時間
+
+    if (animationTimer > clearDuration) {
+        // 実際に盤面から消去
+        clearGroups.forEach(g => {
+            g.blocks.forEach(b => {
+                grid[b.y][b.x] = 0;
+            });
+        });
+        clearGroups = [];
+        // 空間ができたので再び重力処理へ
+        prepareGravity();
+    }
+}
+
+// --- パーティクル・エフェクト ---
+function createParticles(x, y, colorStr) {
+    for (let i = 0; i < 8; i++) {
+        particles.push({
+            x: x,
+            y: y,
+            vx: (Math.random() - 0.5) * 10,
+            vy: (Math.random() - 0.5) * 10,
+            life: 1.0,
+            color: colorStr
+        });
+    }
+}
+
+function updateParticles(dt) {
+    for (let i = particles.length - 1; i >= 0; i--) {
+        let p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.5; // 重力
+        p.life -= dt * 0.002;
+        if (p.life <= 0) {
+            particles.splice(i, 1);
+        }
+    }
+}
+
+function showChainEffect(chain) {
+    if (chain < 2) return;
+    const el = document.getElementById('chain-text');
+    el.innerText = chain + " CHAIN!";
+    el.style.color = ["#fff", "#ff0", "#0ff", "#f0f", "#f00"][(chain-2) % 5];
+    
+    el.classList.remove('show-chain');
+    void el.offsetWidth; // リフロー強制してアニメーション再トリガー
+    el.classList.add('show-chain');
+}
+
+function updateScoreDisplay() {
+    document.getElementById('score').innerText = score;
+}
+
+function showGameOver() {
+    document.getElementById('finalScore').innerText = score;
+    document.getElementById('gameOverScreen').classList.remove('opacity-0', 'pointer-events-none');
+}
+
+// --- 描画処理 ---
+function draw() {
+    // 背景クリア
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // グリッド線描画
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+    ctx.lineWidth = 1;
+    for(let i = 0; i <= COLS; i++) {
+        ctx.beginPath(); ctx.moveTo(i * CELL_SIZE, 0); ctx.lineTo(i * CELL_SIZE, canvas.height); ctx.stroke();
+    }
+    for(let i = 0; i <= ROWS; i++) {
+        ctx.beginPath(); ctx.moveTo(0, i * CELL_SIZE); ctx.lineTo(canvas.width, i * CELL_SIZE); ctx.stroke();
+    }
+
+    // 確定ブロック描画
+    for (let y = HIDDEN_ROWS; y < TOTAL_ROWS; y++) {
+        for (let x = 0; x < COLS; x++) {
+            if (grid[y][x] !== 0) {
+                // 消去アニメーション中は点滅
+                if (state === STATE.CLEARING && isBlockClearing(x, y)) {
+                    if (Math.floor(animationTimer / 100) % 2 === 0) {
+                        drawPuyo(ctx, x, y - HIDDEN_ROWS, grid[y][x], 1.2); // 少し大きく光らせる
+                    }
+                } else {
+                    drawPuyo(ctx, x, y - HIDDEN_ROWS, grid[y][x]);
+                }
+            }
+        }
+    }
+
+    // 自由落下ブロック描画
+    if (state === STATE.GRAVITY) {
+        fallingBlocks.forEach(b => {
+            if (b.currentY >= HIDDEN_ROWS) {
+                drawPuyo(ctx, b.x, b.currentY - HIDDEN_ROWS, b.color);
+            }
+        });
+    }
+
+    // 操作中のブロック描画
+    if (state === STATE.PLAYING && currentPiece) {
+        // ゴースト描画 (落下予測地点)
+        let ghostY = currentPiece.y;
+        let ghostSubY = currentPiece.subY;
+        while (canMove(currentPiece.x, ghostY + 1, {x: currentPiece.subX, y: ghostSubY + 1})) {
+            ghostY++; ghostSubY++;
+        }
+        ctx.globalAlpha = 0.3;
+        if (ghostY >= HIDDEN_ROWS) drawPuyo(ctx, currentPiece.x, ghostY - HIDDEN_ROWS, currentPiece.colorMain);
+        if (ghostSubY >= HIDDEN_ROWS) drawPuyo(ctx, currentPiece.subX, ghostSubY - HIDDEN_ROWS, currentPiece.colorSub);
+        ctx.globalAlpha = 1.0;
+
+        // 実体描画
+        if (currentPiece.y >= HIDDEN_ROWS) drawPuyo(ctx, currentPiece.x, currentPiece.y - HIDDEN_ROWS, currentPiece.colorMain);
+        if (currentPiece.subY >= HIDDEN_ROWS) drawPuyo(ctx, currentPiece.subX, currentPiece.subY - HIDDEN_ROWS, currentPiece.colorSub);
+    }
+
+    // パーティクル描画
+    particles.forEach(p => {
+        ctx.globalAlpha = p.life;
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x - 3, p.y - 3, 6, 6);
+    });
+    ctx.globalAlpha = 1.0;
+}
+
+function isBlockClearing(x, y) {
+    return clearGroups.some(g => g.blocks.some(b => b.x === x && b.y === y));
+}
+
+function drawPuyo(context, x, y, colorCode, scale = 1.0) {
+    let px = x * CELL_SIZE + CELL_SIZE / 2;
+    let py = y * CELL_SIZE + CELL_SIZE / 2;
+    let radius = (CELL_SIZE / 2 - 2) * scale;
+    
+    // リッチなグラデーション
+    let grad = context.createRadialGradient(
+        px - radius * 0.3, py - radius * 0.3, radius * 0.1,
+        px, py, radius
+    );
+    let colorData = COLORS[colorCode];
+    grad.addColorStop(0, '#ffffff'); // ハイライト
+    grad.addColorStop(0.2, colorData.gradient[0]);
+    grad.addColorStop(1, colorData.gradient[1]);
+
+    context.beginPath();
+    context.arc(px, py, radius, 0, Math.PI * 2);
+    context.fillStyle = grad;
+    context.fill();
+    
+    // 影
+    context.beginPath();
+    context.arc(px, py, radius, 0, Math.PI * 2);
+    context.strokeStyle = 'rgba(0,0,0,0.3)';
+    context.lineWidth = 1;
+    context.stroke();
+    
+    // 目を描画（簡易的な表情）
+    context.fillStyle = 'white';
+    context.beginPath(); context.arc(px - 4, py - 4, 3, 0, Math.PI*2); context.fill();
+    context.beginPath(); context.arc(px + 4, py - 4, 3, 0, Math.PI*2); context.fill();
+    context.fillStyle = 'black';
+    context.beginPath(); context.arc(px - 4, py - 4, 1.5, 0, Math.PI*2); context.fill();
+    context.beginPath(); context.arc(px + 4, py - 4, 1.5, 0, Math.PI*2); context.fill();
+}
+
+function drawNext() {
+    nextCtx.clearRect(0, 0, nextCanvas.width, nextCanvas.height);
+    if (!nextPiece) return;
+    
+    // NEXTブロックを中央に描画
+    drawPuyo(nextCtx, 0.5, 0.5, nextPiece.colors[1]); // 上(サブ)
+    drawPuyo(nextCtx, 0.5, 1.5, nextPiece.colors[0]); // 下(メイン)
+}
+
+</script>
+</body>
+</html>
