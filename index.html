@@ -195,8 +195,8 @@ function startGame() {
     document.getElementById('gameOverScreen').classList.add('opacity-0', 'pointer-events-none');
     
     nextPiece = generatePiece();
-    spawnPiece();
     state = STATE.PLAYING;
+    spawnPiece();
 }
 
 // --- ピース関連 ---
@@ -520,8 +520,8 @@ function checkMatches() {
     } else {
         // 連鎖終了
         if (state !== STATE.GAME_OVER) {
-            spawnPiece();
             state = STATE.PLAYING;
+            spawnPiece();
             dropInterval = Math.max(200, 800 - (score / 500)); // スピードアップ
         }
     }
